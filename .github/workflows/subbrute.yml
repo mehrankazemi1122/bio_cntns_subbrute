@@ -16,7 +16,6 @@ env:
 jobs:
   # ==============================================================================
   # JOB 1: PREPARE
-  # Generates wordlists, resolvers, and splits the work into 20 chunks.
   # ==============================================================================
   prepare:
     runs-on: ubuntu-latest
@@ -38,14 +37,11 @@ jobs:
           echo 8.8.8.8 > trusted_resolver.txt
           massdns -r trusted_resolver.txt -t A -o J -w verified_resolvers.json --verify-ip raw_resolvers.txt -s 5000
           cat verified_resolvers.json | jq -r '.["name"]' | sed 's/\.$//' > resolvers.txt
-          head resolvers.txt
-          tail resolvers.txt
 
       - name: Generate & Merge Wordlists
         run: |
           crunch 1 4 abcdefghijklmnopqrstuvwxyz1234567890 > 4_chars.txt
           
-          # Download wordlists
           curl -s https://raw.githubusercontent.com/danielmiessler/SecLists/master/Discovery/DNS/combined_subdomains.txt > combined.txt
           curl -s https://raw.githubusercontent.com/n0kovo/n0kovo_subdomains/main/n0kovo_subdomains_huge.txt > kovo.txt
           curl -s https://wordlists-cdn.assetnote.io/data/manual/best-dns-wordlist.txt > best-dns.txt
@@ -53,27 +49,27 @@ jobs:
           curl -s https://wordlists-cdn.assetnote.io/data/automated/httparchive_subdomains_2024_01_28.txt > all_subs.txt
           curl -s https://media.githubusercontent.com/media/c3l3si4n/subdomain_data/refs/heads/main/common_nodes_6_occurrences.txt > 7mil.txt
           curl -s https://raw.githubusercontent.com/mehrankazemi1122/bio_cntns_subbrute/refs/heads/main/spec_subs.txt > spec_subs.txt          
-          # Merge, Sort, Unique
+          
           cat best-dns.txt 2m.txt 4_chars.txt all_subs.txt combined.txt kovo.txt 7mil.txt spec_subs.txt | sort -u > merged_wordlist.txt
           echo "Total words: $(wc -l < merged_wordlist.txt)"
 
       - name: Split Wordlist
         run: |
           mkdir chunks
-          # Split into 20 numeric suffixes (00 to 19)
-          split -d -n l/20 merged_wordlist.txt chunks/wordlist_part_
+          # -a 2 ensures suffixes are 2 digits (00, 01... 19)
+          split -d -a 2 -n l/20 merged_wordlist.txt chunks/wordlist_part_
 
       - name: Upload Artifacts
         uses: actions/upload-artifact@v4
         with:
           name: preparation-data
+          # Upload the directory itself to preserve structure
           path: |
             resolvers.txt
-            chunks/*
+            chunks
 
   # ==============================================================================
   # JOB 2: MATRIX SCAN
-  # Runs Shuffledns -> Dnsx -> Httpx inside the matrix
   # ==============================================================================
   scan:
     needs: prepare
@@ -81,39 +77,44 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        part: [00, 01, 02, 03, 04, 05, 06, 07, 08, 09, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19]
+        # QUOTED STRINGS to prevent YAML from converting '05' to integer '5'
+        part: ['00', '01', '02', '03', '04', '05', '06', '07', '08', '09', '10', '11', '12', '13', '14', '15', '16', '17', '18', '19']
     steps:
       - name: Download Preparation Data
         uses: actions/download-artifact@v4
         with:
           name: preparation-data
+          # Download to current directory; 'chunks' folder will be restored here
+          path: .
 
-      - name: Install Tools
+      - name: Install Tools & Configure Path
         run: |
-          # MassDNS
           sudo apt-get install -y libpcap-dev
           git clone https://github.com/blechschmidt/massdns.git
           cd massdns && make && sudo cp bin/massdns /usr/local/bin/
           cd ..
           
-          # Go Tools
           go install -v github.com/projectdiscovery/shuffledns/cmd/shuffledns@latest
           go install -v github.com/projectdiscovery/dnsx/cmd/dnsx@latest
           go install -v github.com/projectdiscovery/httpx/cmd/httpx@latest
 
-          # FIX: Add Go bin directory to PATH so subsequent steps can find the tools
+          # Fix PATH
           echo "$(go env GOPATH)/bin" >> $GITHUB_PATH
+
+      - name: Debug File Structure
+        run: ls -R chunks/
 
       - name: Run Pipeline on Chunk ${{ matrix.part }}
         run: |
+          # The file should now correctly correspond to the quoted matrix string
           WORDLIST="chunks/wordlist_part_${{ matrix.part }}"
           
-          # 1. Bruteforce Subdomains (shuffledns)
-          echo "Running shuffledns..."
+          echo "Processing $WORDLIST..."
+          
+          # 1. Shuffledns
           shuffledns -w $WORDLIST -d ${{ env.TARGET_DOMAIN }} -r resolvers.txt -mode bruteforce -retries 3 -o raw_subs_${{ matrix.part }}.txt
           
-          # 2. Validate Subdomains (dnsx)
-          # We filter strictly for the target domain to clean up wildcards/errors
+          # 2. Dnsx
           echo "Running dnsx validation..."
           if [ -s raw_subs_${{ matrix.part }}.txt ]; then
              cat raw_subs_${{ matrix.part }}.txt | grep "${{ env.TARGET_DOMAIN }}$" | dnsx -silent -r resolvers.txt -o valid_subs_${{ matrix.part }}.txt || true
@@ -122,8 +123,7 @@ jobs:
              touch valid_subs_${{ matrix.part }}.txt
           fi
           
-          # 3. HTTP Probing (httpx)
-          # Runs ONLY on the valid subdomains from step 2
+          # 3. Httpx
           echo "Running httpx..."
           if [ -s valid_subs_${{ matrix.part }}.txt ]; then
              httpx -l valid_subs_${{ matrix.part }}.txt \
@@ -144,7 +144,6 @@ jobs:
 
   # ==============================================================================
   # JOB 3: FINALIZE
-  # Combines results, compares with previous run, and notifies Discord
   # ==============================================================================
   finalize:
     needs: scan
@@ -161,10 +160,7 @@ jobs:
 
       - name: Merge Results
         run: |
-          # Combine Valid Subdomains (for record keeping)
           cat valid_subs_*.txt | sort -u > current_subdomains.txt
-          
-          # Combine HTTPX Results
           cat httpx_res_*.txt | sort -u > current_httpx.txt
 
       - name: Compare & Notify (HTTPX Only)
@@ -173,7 +169,7 @@ jobs:
           CURR_HTTPX="current_httpx.txt"
           touch $PREV_HTTPX
           
-          # 1. Detect New Services (URL is new)
+          # 1. New Services
           awk '{print $1}' $PREV_HTTPX | sort > prev_urls.txt
           awk '{print $1}' $CURR_HTTPX | sort > curr_urls.txt
           
@@ -181,19 +177,16 @@ jobs:
           
           if [ -s new_urls_keys.txt ]; then
             echo "New services found..."
-            # grep -Ff reads patterns from file (fixed strings)
             grep -Ff new_urls_keys.txt $CURR_HTTPX > added_services.txt
             
-            # Send Discord Notification
             MSG="**Httpx - Services Added:**\n\`\`\`\n$(cat added_services.txt | head -c 1900)\n\`\`\`"
             JSON_PAYLOAD=$(jq -n --arg content "$MSG" '{content: $content}')
             curl -H "Content-Type: application/json" -d "$JSON_PAYLOAD" "${{ env.DISCORD_TOKEN }}"
           fi
           
-          # 2. Detect Status Changes (URL exists, Status Changed)
+          # 2. Status Changes
           python3 -c "
           import sys
-          
           def load_map(fname):
               d = {}
               try:
@@ -201,7 +194,6 @@ jobs:
                       for line in f:
                           parts = line.strip().split()
                           if len(parts) > 1:
-                              # Key: URL, Value: [StatusCode]
                               d[parts[0]] = parts[1]
               except FileNotFoundError:
                   pass
@@ -216,7 +208,6 @@ jobs:
               if len(parts) > 1:
                   url = parts[0]
                   status = parts[1]
-                  # If URL was in previous run, but status is different
                   if url in prev and prev[url] != status:
                       changes.append(f'URL: {url} | Old: {prev[url]} -> New: {status}')
           
@@ -231,7 +222,6 @@ jobs:
              curl -H "Content-Type: application/json" -d "$JSON_PAYLOAD" "${{ env.DISCORD_TOKEN }}"
           fi
           
-          # Update Files for next run
           cp current_subdomains.txt prev_output.${{ env.TARGET_DOMAIN }}.txt
           cp $CURR_HTTPX $PREV_HTTPX
 
@@ -241,7 +231,6 @@ jobs:
         run: |
           git config --global user.name 'github-actions'
           git config --global user.email 'github-actions@github.com'
-          
           git add prev_output.*.txt prev_httpx_res.txt
           
           if git diff --staged --quiet; then
