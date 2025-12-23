@@ -1,4 +1,3 @@
-this sentence should be in a main repo, not the one which is working.main repo should not work, while the other should
 name: Continuous Subdomain Brute Force
 
 on:
