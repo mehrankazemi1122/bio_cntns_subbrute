@@ -1,4 +1,3 @@
-this sentence should be in a main repo, not the one which is working.main repo should not work, while the other should
 name: Continuous Subdomain Brute Force
 
 on:
@@ -49,9 +48,13 @@ jobs:
           curl -s https://wordlists-cdn.assetnote.io/data/manual/2m-subdomains.txt > 2m.txt
           curl -s https://wordlists-cdn.assetnote.io/data/automated/httparchive_subdomains_2024_01_28.txt > all_subs.txt
           curl -s https://media.githubusercontent.com/media/c3l3si4n/subdomain_data/refs/heads/main/common_nodes_6_occurrences.txt > 7mil.txt
+          curl -s https://gist.githubusercontent.com/jhaddix/86a06c5dc309d08580a018c66354a056/raw/96f4e51d96b2203f19f6381c8c545b278eaa0837/all.txt > jh.txt
           curl -s https://raw.githubusercontent.com/mehrankazemi1122/bio_cntns_subbrute/refs/heads/main/spec_subs.txt > spec_subs.txt          
+          echo "this is result of ls:"
+          ls
+          pwd
           
-          cat best-dns.txt 2m.txt 4_chars.txt all_subs.txt combined.txt kovo.txt 7mil.txt spec_subs.txt | sort -u > merged_wordlist.txt
+          cat best-dns.txt 2m.txt 4_chars.txt all_subs.txt combined.txt kovo.txt 7mil.txt spec_subs.txt jh.txt | sort -u > merged_wordlist.txt
           echo "Total words: $(wc -l < merged_wordlist.txt)"
 
       - name: Split Wordlist
