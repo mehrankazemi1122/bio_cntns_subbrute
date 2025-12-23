@@ -1,5 +1,5 @@
 name: Continuous Subdomain Brute Force
-
+ 
 on:
   push:
     branches: [ main ]
