@@ -101,6 +101,9 @@ jobs:
           go install -v github.com/projectdiscovery/dnsx/cmd/dnsx@latest
           go install -v github.com/projectdiscovery/httpx/cmd/httpx@latest
 
+          # FIX: Add Go bin directory to PATH so subsequent steps can find the tools
+          echo "$(go env GOPATH)/bin" >> $GITHUB_PATH
+
       - name: Run Pipeline on Chunk ${{ matrix.part }}
         run: |
           WORDLIST="chunks/wordlist_part_${{ matrix.part }}"
@@ -112,15 +115,24 @@ jobs:
           # 2. Validate Subdomains (dnsx)
           # We filter strictly for the target domain to clean up wildcards/errors
           echo "Running dnsx validation..."
-          cat raw_subs_${{ matrix.part }}.txt | grep "${{ env.TARGET_DOMAIN }}$" | dnsx -silent -r resolvers.txt -o valid_subs_${{ matrix.part }}.txt
+          if [ -s raw_subs_${{ matrix.part }}.txt ]; then
+             cat raw_subs_${{ matrix.part }}.txt | grep "${{ env.TARGET_DOMAIN }}$" | dnsx -silent -r resolvers.txt -o valid_subs_${{ matrix.part }}.txt || true
+          else
+             echo "No subdomains found in this chunk"
+             touch valid_subs_${{ matrix.part }}.txt
+          fi
           
           # 3. HTTP Probing (httpx)
           # Runs ONLY on the valid subdomains from step 2
           echo "Running httpx..."
-          httpx -l valid_subs_${{ matrix.part }}.txt \
-            -follow-host-redirects -nc -title -status-code -cdn -tech-detect \
-            -H "User-Agent: Mozilla/5.0 (Macintosh; Intel Mac OS X 10.15; rv:108.0) Gecko/20100101 Firefox/108.0" \
-            -silent -o httpx_res_${{ matrix.part }}.txt
+          if [ -s valid_subs_${{ matrix.part }}.txt ]; then
+             httpx -l valid_subs_${{ matrix.part }}.txt \
+               -follow-host-redirects -nc -title -status-code -cdn -tech-detect \
+               -H "User-Agent: Mozilla/5.0 (Macintosh; Intel Mac OS X 10.15; rv:108.0) Gecko/20100101 Firefox/108.0" \
+               -silent -o httpx_res_${{ matrix.part }}.txt || true
+          else
+             touch httpx_res_${{ matrix.part }}.txt
+          fi
 
       - name: Upload Chunk Results
         uses: actions/upload-artifact@v4
